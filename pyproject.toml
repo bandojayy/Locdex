@@ -1,0 +1,16 @@
+[project]
+name = "locdex"
+version = "0.1.0"
+dependencies = [
+    "requests",
+    "sentence-transformers",
+    "numpy",
+    "PyGithub",
+    "anthropic",
+    "pyyaml",
+    "ruff",
+    "pytest",
+]
+
+[project.scripts]
+locdex = "locdex.main:cli"

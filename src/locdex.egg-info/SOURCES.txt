@@ -1,0 +1,10 @@
+pyproject.toml
+src/locdex/__init__.py
+src/locdex/local_model.py
+src/locdex/main.py
+src/locdex.egg-info/PKG-INFO
+src/locdex.egg-info/SOURCES.txt
+src/locdex.egg-info/dependency_links.txt
+src/locdex.egg-info/entry_points.txt
+src/locdex.egg-info/requires.txt
+src/locdex.egg-info/top_level.txt
