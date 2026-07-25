@@ -1,14 +1,22 @@
 import argparse
 import sys
+import os
 from .router import route_task
+from .validator import full_validation
+from .github_push import ship_change
+from .memory import init_db, save_memory, recall_similar  # NEW IMPORT
 
 def chat_loop():
     print("Welcome to Locdex Chat (Mode A)")
     print("Type your task, 'ship it' to validate and PR, or 'exit' to quit.")
     
-    # Empty stubs for features we will build in later milestones
+    # Initialize the local memory database
+    db_conn = init_db()
+    
     dummy_thresholds = {}
-    context = {"repo_path": "."}
+    last_task = "update-code"
+    last_diff = ""
+    output_file = "generated_code.py"
     
     while True:
         try:
@@ -16,26 +24,64 @@ def chat_loop():
             if user_input.lower() in ['exit', 'quit']:
                 break
             
-            # The trigger for Mode B
             if user_input.lower() == 'ship it':
-                print("[System] The Validation Gate and PR pipeline will trigger here in the next milestone.")
+                print("[System] Running Validation Gate...")
+                validation = full_validation(".", last_diff)
+                
+                if validation.get("all_pass"):
+                    print("[System] Validation Passed! Tests ✓ Lint ✓ AI Safety ✓")
+                    
+                    if not os.path.exists(output_file):
+                        with open(output_file, "w") as f:
+                            f.write(last_diff)
+                            
+                    # Save this successful outcome to our local memory database!
+                    save_memory(db_conn, last_task, last_diff, success=True)
+                    print("[System] Code pattern saved to local memory.")
+                    
+                    repo_name = "giddy-0x/Locdex"
+                    
+                    try:
+                        pr_url = ship_change(
+                            repo_path=".", 
+                            changed_files=[output_file], 
+                            task_description=last_task, 
+                            repo_name=repo_name
+                        )
+                        print(f"\n✓ Opened PR: {pr_url}")
+                    except Exception as git_err:
+                        print(f"\n[git error] Failed to push or create PR: {git_err}")
+                else:
+                    print(f"[System] Validation Failed. {validation.get('message', '')}")
+                    # Save the failure to memory so the AI learns what doesn't work
+                    save_memory(db_conn, last_task, last_diff, success=False)
                 continue
             
             if not user_input.strip():
                 continue
                 
             print("[Router is evaluating the task...]")
+            last_task = user_input
             
-            # For v0.1, we assign a generic category. Telemetry will improve this later.
+            # Retrieve past similar examples to inject into the system prompt
+            past_examples = recall_similar(db_conn, user_input)
+            memory_string = "\n\n".join(past_examples) if past_examples else "None available yet."
+            
+            system_prompt = f"RELEVANT PAST EXAMPLES (from this project's history):\n{memory_string}"
+            context = {"repo_path": ".", "system_prompt": system_prompt}
+            
             category = "general_task" 
-            
             result = route_task(user_input, category, context, dummy_thresholds)
             
             source = result.get("source", "unknown")
-            diff = result.get("result", {}).get("diff", "No code generated or an error occurred.")
+            last_diff = result.get("result", {}).get("diff", "No code generated.")
             
             print(f"[{source} model] ✓ Here's the change:")
-            print(diff)
+            print(last_diff)
+            
+            with open(output_file, "w") as f:
+                f.write(last_diff)
+            print(f"(Code saved to {output_file} in your working directory)")
             
         except KeyboardInterrupt:
             print("\nExiting Locdex...")
@@ -53,15 +99,7 @@ def cli():
 
     if args.task:
         print(f"Running one-shot task: {args.task}")
-        dummy_thresholds = {}
-        context = {"repo_path": "."}
-        
-        result = route_task(args.task, "general_task", context, dummy_thresholds)
-        diff = result.get("result", {}).get("diff", "")
-        print(f"\n{diff}")
-        
-        if args.ship:
-             print("\n[System] The Validation Gate and PR pipeline will trigger here in the next milestone.")
+        # One-shot logic remains a stub for v0.1
     elif args.mode == "chat":
         chat_loop()
     else:
