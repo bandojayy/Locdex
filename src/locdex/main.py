@@ -5,6 +5,7 @@ from .router import route_task
 from .validator import full_validation
 from .github_push import ship_change
 from .memory import init_db, save_memory, recall_similar  # NEW IMPORT
+from .rollback import save_checkpoint, restore_latest_checkpoint
 
 def chat_loop():
     print("Welcome to Locdex Chat (Mode A)")
@@ -23,6 +24,17 @@ def chat_loop():
             user_input = input("\n> ")
             if user_input.lower() in ['exit', 'quit']:
                 break
+
+
+            # --- NEW ROLLBACK INTERCEPT ---
+            if user_input.lower() == 'rollback':
+                print(f"[System] Attempting to restore {output_file} to previous state...")
+                if restore_latest_checkpoint(output_file):
+                    print(f"✓ Successfully rewound {output_file}.")
+                else:
+                    print(f"x No previous checkpoints found for {output_file}.")
+                continue
+            # -----------------------------
             
             if user_input.lower() == 'ship it':
                 print("[System] Running Validation Gate...")
@@ -78,6 +90,10 @@ def chat_loop():
             
             print(f"[{source} model] ✓ Here's the change:")
             print(last_diff)
+            
+            # --- NEW CHECKPOINT TRIGGER ---
+            save_checkpoint(output_file)
+            # ------------------------------
             
             with open(output_file, "w") as f:
                 f.write(last_diff)
