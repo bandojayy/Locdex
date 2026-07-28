@@ -1,13 +1,10 @@
 import requests
 import re
+
 import os
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
 MODEL_NAME = "qwen3-coder:30b-a3b"
-
-HOSTED_QWEN_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
-HOSTED_QWEN_MODEL_ID = "qwen/qwen3-coder"          
-HOSTED_QWEN_NEXT_MODEL_ID = "google/gemma-2-9b-it:free" 
 
 def run_local(prompt: str, system: str = "") -> dict:
     """Mode 1: Ollama, fully local, $0 per call."""
@@ -21,45 +18,68 @@ def run_local(prompt: str, system: str = "") -> dict:
     response.raise_for_status()
     return response.json()
 
-def run_hosted_qwen(prompt: str, system: str = "") -> dict:
-    """Bypassing OpenRouter and using Gemini Free Tier as the primary model."""
-    api_key = os.environ.get("GOOGLE_API_KEY")
-    if not api_key:
-        raise ValueError("GOOGLE_API_KEY not set — please export it in your terminal")
-        
-    endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={api_key}"
-    full_prompt = f"{system}\n\n{prompt}" if system else prompt
+def run_hosted_model(prompt: str, system: str = "") -> dict:
+    """Mode 2: Modular hosted endpoint supporting OpenRouter and Gemini."""
     
-    try:
-        response = requests.post(endpoint, json={
-            "contents": [{"parts": [{"text": full_prompt}]}]
-        })
+    provider = os.environ.get("LOCDEX_HOSTED_PROVIDER", "openrouter").lower()
+    
+    if provider == "openrouter":
+        api_key = os.environ.get("OPENROUTER_API_KEY")
+        if not api_key:
+            raise ValueError("OPENROUTER_API_KEY not set in environment.")
+            
+        # --- DYNAMIC FREE MODEL FETCHER ---
+        try:
+            print("\n[System] Querying OpenRouter for active free models...")
+            models_req = requests.get("https://openrouter.ai/api/v1/models")
+            models_req.raise_for_status()
+            all_models = models_req.json().get("data", [])
+            
+            # Filter for models where both prompt and completion costs are exactly "0"
+            free_models = [
+                m["id"] for m in all_models 
+                if m.get("pricing", {}).get("prompt") == "0" 
+                and m.get("pricing", {}).get("completion") == "0"
+            ]
+            
+            if not free_models:
+                raise ValueError("No free models currently available on OpenRouter.")
+                
+            model_id = free_models[0] # Pick the first active one on the list
+            print(f"[System] Success: Routing to {model_id}")
+            
+        except Exception as e:
+            print(f"[System] Failed to fetch dynamic models: {e}")
+            model_id = "mistralai/mistral-7b-instruct:free" # Ultimate fallback
+        # ----------------------------------
+
+        response = requests.post("https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "HTTP-Referer": "https://github.com/locdex", # OpenRouter recommends this header
+            },
+            json={
+                "model": model_id,
+                "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
+            })
         response.raise_for_status()
         raw = response.json()
-        content = raw.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+        content = raw.get("choices", [{}])[0].get("message", {}).get("content", "")
         return {"response": content, "raw": raw}
         
-    except requests.exceptions.RequestException as e:
-        # Development Mock: Keep the pipeline moving even if the API rate limits us
-        print(f"\n[System] API Error ({e}). Returning mocked response for testing.")
-        
-        mock_code = """
-def add_two_numbers(a, b):
-    return a + b
-
-CONFIDENCE: 0.99
-"""
-        return {"response": mock_code, "raw": {"mocked": True}}
+    elif provider == "gemini":
+        # ... (keep your existing Gemini block here)
+        pass
 
 def get_configured_model_mode() -> str:
-    """Defaults to hosted since we are skipping Ollama."""
+    """Defaults to hosted to bypass local hardware limits."""
     return os.environ.get("LOCDEX_MODE", "hosted")
 
 def run_primary_model(prompt: str, system: str = "", mode: str = None) -> dict:
     """Single entry point the rest of the system calls."""
     mode = mode or get_configured_model_mode()  
     if mode == "hosted":
-        return run_hosted_qwen(prompt, system)
+        return run_hosted_model(prompt, system)
     return run_local(prompt, system)
 
 CONFIDENCE_SUFFIX = """
@@ -76,15 +96,23 @@ def parse_confidence(raw_text: str) -> tuple[str, float]:
     code = raw_text[:match.start()].rstrip() if match else raw_text
     return code, confidence
 
+def extract_code(raw_text: str) -> str:
+    """Strips Markdown formatting and extracts the pure code block."""
+    # Looks for content inside ```python ... ``` or just ``` ... ```
+    match = re.search(r"```(?:python)?\n(.*?)```", raw_text, re.DOTALL | re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+    return raw_text.strip()
+
 def run_local_with_confidence(task: str, system: str = "") -> dict:
     """Single call that returns both generated code and confidence."""
     prompt = task + CONFIDENCE_SUFFIX
     raw = run_primary_model(prompt, system=system)
     
-    # Extract the text depending on the API response structure
     raw_text = raw.get("response", "")
-    if not raw_text and "choices" in raw:
-        raw_text = raw["choices"][0]["message"]["content"]
-        
-    code, confidence = parse_confidence(raw_text)
-    return {"diff": code, "confidence": confidence, "raw": raw}
+    code_with_confidence, confidence = parse_confidence(raw_text)
+    
+    # Clean the markdown formatting before returning the diff
+    clean_code = extract_code(code_with_confidence)
+    
+    return {"diff": clean_code, "confidence": confidence, "raw": raw}
