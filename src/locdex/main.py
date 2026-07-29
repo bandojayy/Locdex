@@ -4,8 +4,9 @@ import os
 from .router import route_task
 from .validator import full_validation
 from .github_push import ship_change
-from .memory import init_db, save_memory, recall_similar  # NEW IMPORT
+from .memory import init_db, save_memory, recall_similar
 from .rollback import save_checkpoint, restore_latest_checkpoint
+from .editor import get_workspace_context  # NEW IMPORT
 
 def chat_loop():
     print("Welcome to Locdex Chat (Mode A)")
@@ -25,8 +26,7 @@ def chat_loop():
             if user_input.lower() in ['exit', 'quit']:
                 break
 
-
-            # --- NEW ROLLBACK INTERCEPT ---
+            # --- ROLLBACK INTERCEPT ---
             if user_input.lower() == 'rollback':
                 print(f"[System] Attempting to restore {output_file} to previous state...")
                 if restore_latest_checkpoint(output_file):
@@ -47,7 +47,6 @@ def chat_loop():
                         with open(output_file, "w") as f:
                             f.write(last_diff)
                             
-                    # Save this successful outcome to our local memory database!
                     save_memory(db_conn, last_task, last_diff, success=True)
                     print("[System] Code pattern saved to local memory.")
                     
@@ -65,37 +64,58 @@ def chat_loop():
                         print(f"\n[git error] Failed to push or create PR: {git_err}")
                 else:
                     print(f"[System] Validation Failed. {validation.get('message', '')}")
-                    # Save the failure to memory so the AI learns what doesn't work
                     save_memory(db_conn, last_task, last_diff, success=False)
                 continue
             
             if not user_input.strip():
                 continue
                 
-            print("[Router is evaluating the task...]")
+            print("[System] Reading workspace context...")
             last_task = user_input
             
-            # Retrieve past similar examples to inject into the system prompt
+            # --- CONTEXT ASSEMBLY ---
             past_examples = recall_similar(db_conn, user_input)
             memory_string = "\n\n".join(past_examples) if past_examples else "None available yet."
             
-            system_prompt = f"RELEVANT PAST EXAMPLES (from this project's history):\n{memory_string}"
+            # Fetch current local files to give the LLM project awareness
+            workspace_string = get_workspace_context(".")
+            
+            system_prompt = (
+                f"RELEVANT PAST EXAMPLES:\n{memory_string}\n\n"
+                f"WORKSPACE CONTEXT (Current local files):\n{workspace_string}"
+            )
             context = {"repo_path": ".", "system_prompt": system_prompt}
+            # ------------------------
             
             category = "general_task" 
+            print("[Router is evaluating the task...]")
+            
+            # --- ROUTE TASK ---
             result = route_task(user_input, category, context, dummy_thresholds)
             
+            # --- BULLETPROOF SAFETY CHECKS ---
+            if result is None:
+                result = {}
+            elif isinstance(result, str):
+                result = {"source": "mock", "result": {"diff": result}}
+                
             source = result.get("source", "unknown")
-            last_diff = result.get("result", {}).get("diff", "No code generated.")
+            safe_result = result.get("result")
+            
+            if isinstance(safe_result, str):
+                safe_result = {"diff": safe_result}
+            elif not safe_result:
+                safe_result = {}
+                
+            last_diff = safe_result.get("diff", "No code generated.")
+            # ---------------------------------
             
             print(f"[{source} model] ✓ Here's the change:")
             print(last_diff)
             
-            # --- NEW CHECKPOINT TRIGGER ---
             save_checkpoint(output_file)
-            # ------------------------------
             
-            with open(output_file, "w") as f:
+            with open(output_file, "w", encoding="utf-8") as f:
                 f.write(last_diff)
             print(f"(Code saved to {output_file} in your working directory)")
             
@@ -115,7 +135,6 @@ def cli():
 
     if args.task:
         print(f"Running one-shot task: {args.task}")
-        # One-shot logic remains a stub for v0.1
     elif args.mode == "chat":
         chat_loop()
     else:

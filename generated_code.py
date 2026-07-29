@@ -1,3 +1,2 @@
-
-def add_two_numbers(a, b):
-    return a + b
+def print_function_name():
+    print("get_workspace_context")
