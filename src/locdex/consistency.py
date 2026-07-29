@@ -1,34 +1,51 @@
-import subprocess
+import ast
+import os
 
-def find_usages(symbol: str, repo_path: str, language: str) -> list[str]:
-    """Finds files that reference a specific symbol using grep."""
-    extensions = {
-        "python": "*.py",
-        "typescript": "*.ts,*.tsx,*.js,*.jsx",
-        "go": "*.go",
-    }
-    include = extensions.get(language, "*")
-    
-    # Run grep recursively to find files containing the symbol
+IGNORE_DIRS = {".git", "__pycache__", "venv", ".venv", "node_modules", "env"}
+
+def get_definitions(code_str: str) -> set:
+    """Parses Python code and extracts all function and class names."""
     try:
-        result = subprocess.run(
-            ["grep", "-rl", symbol, repo_path, f"--include={include}"],
-            capture_output=True, text=True
-        )
-        return result.stdout.strip().split("\n") if result.stdout else []
-    except Exception:
-        # If grep fails (e.g., not installed on Windows without WSL), return empty
-        return []
+        tree = ast.parse(code_str)
+    except SyntaxError:
+        return set()
+        
+    definitions = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            definitions.add(node.name)
+    return definitions
 
-def check_consistency(changed_symbols: list[str], repo_path: str, language: str) -> dict:
+def check_consistency(repo_path: str, generated_code: str) -> list[str]:
     """
-    v0.1: grep-based for all three languages — real but approximate.
-    Flags any files that reference a symbol that was changed by the AI.
+    Scans the workspace to ensure the generated code doesn't 
+    redefine or shadow existing project architecture.
     """
-    flagged = {}
-    for symbol in changed_symbols:
-        files = find_usages(symbol, repo_path, language)
-        # If the symbol is found in more than one file, it's a consistency risk
-        if len(files) > 1:
-            flagged[symbol] = files
-    return flagged
+    flags = []
+    
+    # 1. What does the AI want to define?
+    new_definitions = get_definitions(generated_code)
+    if not new_definitions:
+        return flags
+
+    # 2. What already exists in the workspace?
+    workspace_definitions = set()
+    for root, dirs, files in os.walk(repo_path):
+        # Prune ignored directories in-place
+        dirs[:] = [d for d in dirs if d not in IGNORE_DIRS and not d.startswith('.')]
+        
+        for file in files:
+            if file.endswith('.py') and file != "generated_code.py":
+                filepath = os.path.join(root, file)
+                try:
+                    with open(filepath, "r", encoding="utf-8") as f:
+                        workspace_definitions.update(get_definitions(f.read()))
+                except Exception:
+                    pass
+    
+    # 3. Check for collisions
+    collisions = new_definitions.intersection(workspace_definitions)
+    for collision in collisions:
+        flags.append(f"Naming Collision: '{collision}' is already defined in your workspace.")
+        
+    return flags

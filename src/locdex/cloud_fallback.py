@@ -73,6 +73,17 @@ def _call_provider(provider: str, cfg: dict, task: str, context: dict) -> dict:
             
     response = requests.post(cfg["endpoint"], json=payload, headers=headers)
     response.raise_for_status()
+    response = requests.post(cfg["endpoint"], json=payload, headers=headers)
+    
+    # --- GRACEFUL ERROR HANDLING ---
+    try:
+        response.raise_for_status()
+    except requests.exceptions.HTTPError as e:
+        print(f"\n[Cloud Fallback] API Error ({provider}): {e}")
+        return {"diff": "", "raw": {}, "provider": provider}
+    # -------------------------------
+    
+    
     raw = response.json()
     
     # Extract output correctly depending on the provider

@@ -7,6 +7,7 @@ from .github_push import ship_change
 from .memory import init_db, save_memory, recall_similar
 from .rollback import save_checkpoint, restore_latest_checkpoint
 from .editor import get_workspace_context  # NEW IMPORT
+from .telemetry import log_routing_outcome
 
 def chat_loop():
     print("Welcome to Locdex Chat (Mode A)")
@@ -48,6 +49,7 @@ def chat_loop():
                             f.write(last_diff)
                             
                     save_memory(db_conn, last_task, last_diff, success=True)
+                    log_routing_outcome(category, "python", source, success=True, attempts=1)
                     print("[System] Code pattern saved to local memory.")
                     
                     repo_name = "giddy-0x/Locdex"
@@ -65,6 +67,7 @@ def chat_loop():
                 else:
                     print(f"[System] Validation Failed. {validation.get('message', '')}")
                     save_memory(db_conn, last_task, last_diff, success=False)
+                    log_routing_outcome(category, "python", source, success=False, attempts=1)
                 continue
             
             if not user_input.strip():
@@ -72,6 +75,7 @@ def chat_loop():
                 
             print("[System] Reading workspace context...")
             last_task = user_input
+            last_diff = ""  # RESET STATE: Prevent previous code from leaking if generation fails
             
             # --- CONTEXT ASSEMBLY ---
             past_examples = recall_similar(db_conn, user_input)
