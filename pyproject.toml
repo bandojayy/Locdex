@@ -1,16 +1,25 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "locdex"
-version = "0.1.0"
+version = "1.1.0"
+description = "A local-first, autonomous AI coding agent with a fail-closed security sandbox."
+readme = "README.md"
+authors = [
+    { name = "Emmanuel Amoo" }
+]
+requires-python = ">=3.10"
 dependencies = [
     "requests",
-    "sentence-transformers",
-    "numpy",
     "PyGithub",
-    "anthropic",
-    "pyyaml",
-    "ruff",
-    "pytest",
+    "sentence-transformers",
+    "pytest"
 ]
 
 [project.scripts]
 locdex = "locdex.main:cli"
+
+[tool.setuptools.packages.find]
+where = ["src"]
