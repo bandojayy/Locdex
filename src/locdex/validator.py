@@ -2,6 +2,7 @@ import subprocess
 import os
 import sys
 from .consistency import check_consistency
+from .safety import check_ast_security
 
 SUPPORTED_LANGUAGES = {"python"}
 
@@ -18,7 +19,6 @@ def run_sandboxed(command: list, timeout: int = 15) -> tuple[subprocess.Complete
     - Strips API keys and tokens from the environment.
     - Enforces a strict timeout to kill infinite loops.
     """
-    # Create a safe environment lacking sensitive credentials
     safe_env = {
         k: v for k, v in os.environ.items() 
         if "KEY" not in k.upper() and "TOKEN" not in k.upper()
@@ -39,7 +39,7 @@ def run_sandboxed(command: list, timeout: int = 15) -> tuple[subprocess.Complete
         return None, f"[Error] Sandbox execution failed: {e}"
 
 def full_validation(repo_path: str, diff: str, target_file: str) -> dict:
-    """Executes sandboxed syntax checking, test execution, and AST consistency."""
+    """Executes security analysis, syntax checking, test execution, and AST consistency."""
     
     if not diff or not diff.strip():
         return {
@@ -51,18 +51,28 @@ def full_validation(repo_path: str, diff: str, target_file: str) -> dict:
 
     language = detect_language(repo_path)
     
-    # Ensure the target directory exists before saving
-    os.makedirs(os.path.dirname(os.path.abspath(target_file)) or ".", exist_ok=True)
+    # 0. NEW: AST Static Security Check
+    # This MUST run before writing the file and running pytest to block malicious execution.
+    safety_flags = check_ast_security(diff)
+    ai_safety_pass = (len(safety_flags) == 0)
     
+    if not ai_safety_pass:
+        return {
+            "language": language, "tests_pass": False, "lint_pass": False,
+            "consistency_pass": False, "ai_safety_pass": False,
+            "consistency_flags": [], "all_pass": False,
+            "message": "AI Safety Check Failed (Execution Blocked):\n" + "\n".join(safety_flags)
+        }
+
+    # Ensure target directory exists and save the safe file
+    os.makedirs(os.path.dirname(os.path.abspath(target_file)) or ".", exist_ok=True)
     with open(target_file, "w", encoding="utf-8") as f:
         f.write(diff)
 
     messages = []
 
     # 1. Syntax Check (Sandboxed)
-    # Using sys.executable ensures it uses your current virtual environment
     syntax_res, syntax_err = run_sandboxed([sys.executable, "-m", "py_compile", target_file])
-    
     if syntax_err:
         lint_pass = False
         messages.append(syntax_err)
@@ -74,7 +84,6 @@ def full_validation(repo_path: str, diff: str, target_file: str) -> dict:
     # 2. Pytest Execution (Sandboxed)
     tests_pass = False
     test_res, test_err = run_sandboxed([sys.executable, "-m", "pytest", target_file])
-    
     if test_err:
         messages.append(test_err)
     elif test_res:
@@ -89,9 +98,6 @@ def full_validation(repo_path: str, diff: str, target_file: str) -> dict:
     consistency_pass = (len(consistency_flags) == 0)
     if not consistency_pass:
         messages.append("AST Consistency Check Failed:\n" + "\n".join(consistency_flags))
-
-    # 4. AI Safety Check (Mocked)
-    ai_safety_pass = True
 
     all_pass = lint_pass and tests_pass and consistency_pass and ai_safety_pass
 
