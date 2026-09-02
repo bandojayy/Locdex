@@ -57,11 +57,12 @@ def chat_loop():
                     print("[System] Code pattern saved to local memory.")
                     
                     try:
+                        # NEW: We no longer hardcode the repo_name. 
+                        # It dynamically extracts from Git origin.
                         pr_url = ship_change(
                             repo_path=".", 
                             changed_files=[output_file], 
-                            task_description=last_task, 
-                            repo_name="giddy-0x/Locdex"
+                            task_description=last_task
                         )
                         print(f"\n✓ Opened PR: {pr_url}")
                     except Exception as git_err:
