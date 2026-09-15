@@ -10,9 +10,30 @@ from .editor import get_workspace_context
 from .telemetry import log_routing_outcome
 from .planner import get_metrics_report
 
+def startup_diagnostic():
+    """Runs a pre-flight check on required environment variables."""
+    print("\n[System] Running environment diagnostics...")
+    
+    missing = []
+    if not os.environ.get("OPENROUTER_API_KEY"):
+        print(" ⚠️  Missing OPENROUTER_API_KEY: Cloud fallback failover is DISABLED.")
+        missing.append("cloud")
+        
+    if not os.environ.get("GITHUB_TOKEN"):
+        print(" ⚠️  Missing GITHUB_TOKEN: GitHub PR automation ('ship it') is DISABLED.")
+        missing.append("git")
+        
+    if not missing:
+        print(" ✓ All environment configurations detected. Agent is fully armed.")
+    else:
+        print(" ℹ️  Agent will operate with degraded capabilities until keys are exported.")
+    print("-" * 50)
+
 def chat_loop():
     print("Welcome to Locdex Chat (Mode A)")
     print("Type your task, 'ship it' to PR, 'budget' for cost metrics, or 'exit' to quit.")
+    
+    startup_diagnostic()
     
     db_conn = init_db()
     dummy_thresholds = {}
@@ -57,8 +78,6 @@ def chat_loop():
                     print("[System] Code pattern saved to local memory.")
                     
                     try:
-                        # NEW: We no longer hardcode the repo_name. 
-                        # It dynamically extracts from Git origin.
                         pr_url = ship_change(
                             repo_path=".", 
                             changed_files=[output_file], 
