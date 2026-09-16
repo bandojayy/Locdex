@@ -70,3 +70,23 @@ def is_safe_path(base_dir: str, target_path: str) -> bool:
     except ValueError:
         # Fails closed on Windows if paths are on different drives (e.g., C: vs D:)
         return False
+
+def is_protected_path(target_path: str) -> bool:
+    """
+    Prevents the agent from overwriting sensitive internal files 
+    even if they are technically inside the workspace.
+    """
+    try:
+        # Get relative path from the current directory
+        rel_path = os.path.relpath(target_path, ".")
+        
+        # Split the path into its individual folder/file components
+        # Normalize slashes for Windows/Linux
+        parts = set(rel_path.replace("\\", "/").split("/"))
+        
+        # Blacklisted directories and files
+        protected_dirs = {".git", ".github", "venv", "env", ".env", "__pycache__", ".locdex_budget.json"}
+        
+        return bool(parts.intersection(protected_dirs))
+    except ValueError:
+        return True # Fail closed if path resolution fails

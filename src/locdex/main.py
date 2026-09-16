@@ -9,7 +9,7 @@ from .rollback import save_checkpoint, restore_latest_checkpoint
 from .editor import get_workspace_context
 from .telemetry import log_routing_outcome
 from .planner import get_metrics_report
-from .safety import is_safe_path  # NEW IMPORT
+from .safety import is_safe_path, is_protected_path  # UPDATED IMPORT
 
 def startup_diagnostic():
     """Runs a pre-flight check on required environment variables."""
@@ -73,6 +73,10 @@ def chat_loop():
                     # ENFORCE PATH SECURITY BEFORE SAVING
                     if not is_safe_path(".", output_file):
                         print(f"[Security Block] Blocked attempt to commit a file outside the workspace: {output_file}")
+                        continue
+
+                    if is_protected_path(output_file):
+                        print(f"[Security Block] Blocked attempt to commit a protected internal file: {output_file}")
                         continue
                         
                     os.makedirs(os.path.dirname(os.path.abspath(output_file)) or ".", exist_ok=True)
@@ -142,6 +146,11 @@ def chat_loop():
             if not is_safe_path(".", output_file):
                 print(f"\n[Security Block] Path traversal detected! The LLM attempted to write to: {output_file}")
                 print("Write operation aborted to protect the host system.")
+                continue
+
+            if is_protected_path(output_file):
+                print(f"\n[Security Block] Attempted to modify a protected internal path: {output_file}")
+                print("Write operation aborted to prevent repository/CI hijacking.")
                 continue
             
             save_checkpoint(output_file)
