@@ -27,3 +27,23 @@ def test_full_validation_syntax_error():
     assert result["all_pass"] is False, "Validation gate incorrectly passed invalid syntax."
     assert result["lint_pass"] is False
     assert "Syntax Error" in result["message"]
+
+def test_run_sandboxed_scrubs_environment():
+    """Verify that sensitive API keys are stripped from the execution environment."""
+    import os
+    
+    # Temporarily inject a fake token into the parent environment
+    os.environ["GITHUB_TOKEN"] = "fake_secret_token_123"
+    
+    # Ask the sandbox to execute code that tries to print the environment variable
+    code = "import os; print('TOKEN_VALUE=' + str(os.environ.get('GITHUB_TOKEN')))"
+    res, err = run_sandboxed([sys.executable, "-c", code], timeout=5)
+    
+    # Verify the sandbox ran successfully
+    assert err is None
+    
+    # Verify the token is 'None' inside the sandbox (it was successfully scrubbed)
+    assert "TOKEN_VALUE=None" in res.stdout, "Sandbox failed to scrub GITHUB_TOKEN from the environment!"
+    
+    # Cleanup
+    del os.environ["GITHUB_TOKEN"]
