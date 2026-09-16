@@ -3,6 +3,22 @@ import subprocess
 import sys
 from .safety import check_ast_security
 
+def detect_language(filepath: str) -> str:
+    """Helper function to detect file language by extension."""
+    if filepath.endswith('.py'):
+        return "python"
+    return "unknown"
+
+def quick_check(code: str, language: str = "python") -> bool:
+    """Fast syntax validation without spinning up the full sandbox."""
+    if language == "python":
+        try:
+            compile(code, "<string>", "exec")
+            return True
+        except SyntaxError:
+            return False
+    return True
+
 def run_sandboxed(cmd, timeout=15):
     """Runs a subprocess with a timeout and a strictly sanitized environment."""
     
@@ -49,7 +65,7 @@ def full_validation(repo_path: str, code: str, filepath: str) -> dict:
     if security_flags:
         return {"all_pass": False, "lint_pass": False, "message": "Security Flags:\n" + "\n".join(security_flags)}
         
-    # 3. Consistency Check (Fail gracefully if not yet fully implemented)
+    # 3. Consistency Check
     try:
         from .consistency import check_consistency
         consistency_errs = check_consistency(repo_path, code)
@@ -59,8 +75,6 @@ def full_validation(repo_path: str, code: str, filepath: str) -> dict:
         pass
 
     # 4. Sandbox Pytest Execution
-    # We use a dummy test execution here if no actual pytest configuration is requested, 
-    # but run_sandboxed handles the isolation perfectly.
     res, err = run_sandboxed([sys.executable, "-m", "pytest", repo_path], timeout=15)
     
     if err:

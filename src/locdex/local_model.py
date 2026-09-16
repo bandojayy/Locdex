@@ -16,8 +16,6 @@ def get_best_local_model() -> str | None:
         if not models:
             return None
             
-        # Priority 1: Specifically tuned coding models
-        # Priority 2: High-reasoning generalist models
         priorities = ["qwen", "deepseek", "coder", "llama", "phi"]
         
         for preferred in priorities:
@@ -25,11 +23,9 @@ def get_best_local_model() -> str | None:
                 if preferred in model.lower():
                     return model
                     
-        # Fallback to the first available model if no priority matches
         return models[0]
         
     except requests.exceptions.RequestException:
-        # Ollama is not running on this machine
         return None
 
 def parse_llm_response(text: str):
@@ -45,7 +41,8 @@ def extract_code(text: str):
     match = re.search(r"```(?:python)?(.*?)```", text, re.DOTALL)
     return match.group(1).strip() if match else text.strip()
 
-def run_local_with_confidence(task: str, context: dict) -> dict:
+# FIX: Added `system` and `**kwargs` to perfectly match how router.py calls this function
+def run_local_with_confidence(task: str, system: str = "", context: dict = None, **kwargs) -> dict:
     """Executes a task against the dynamically selected local Ollama model."""
     model_name = get_best_local_model()
     
@@ -56,7 +53,11 @@ def run_local_with_confidence(task: str, context: dict) -> dict:
     print(f"[local model] Selected dynamic model: {model_name}")
     
     prompt = task + PROTOCOL_SUFFIX
-    system_prompt = context.get("system_prompt", "")
+    
+    # Handle either the direct 'system' kwarg or a fallback to the context dictionary
+    system_prompt = system
+    if not system_prompt and context:
+        system_prompt = context.get("system_prompt", "")
     
     payload = {
         "model": model_name,

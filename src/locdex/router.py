@@ -1,58 +1,36 @@
-import os
 from .local_model import run_local_with_confidence
 from .cloud_fallback import run_cloud
-from .validator import quick_check, full_validation, detect_language
-from .consistency import check_consistency
-from .planner import record_usage
+from .validator import full_validation, quick_check
 
-MAX_LOCAL_ATTEMPTS = 3
-
-def route_task(task: str, category: str, context: dict, category_thresholds: dict) -> dict:
-    language = detect_language(context.get("repo_path", "."))  
-    allowed_attempts = category_thresholds.get((language, category), MAX_LOCAL_ATTEMPTS)
+def route_task(task: str, task_type: str, context: dict, thresholds: dict) -> dict:
+    """
+    Routes the task to the local model first. If it fails, or if validation fails 
+    3 times, it safely escalates to the cloud fallback chain.
+    """
+    attempts = 3
+    last_error = ""
     
-    current_prompt = task
-    reason = "local_sufficient"
-
-    for attempt in range(allowed_attempts):
-        print(f"[Router] Attempt {attempt + 1}/{allowed_attempts}...")
+    for attempt in range(1, attempts + 1):
+        print(f"[Router] Attempt {attempt}/{attempts}...")
         
-        result = run_local_with_confidence(current_prompt, system=context.get("system_prompt", ""))
-        target_file = result.get("filepath", "generated_code.py")
+        # 1. Try Local Model
+        result = run_local_with_confidence(f"{task}\n{last_error}", **context)
         
-        # --- METRICS: Log the local generation savings ---
-        generated_text = result.get("raw", {}).get("response", result.get("diff", ""))
-        record_usage("local", current_prompt, generated_text)
-
-        if quick_check(context.get("repo_path", "."), result["diff"]):
-            validation = full_validation(context.get("repo_path", "."), result["diff"], target_file)
+        # 2. If Local fails completely (Ollama offline), switch to Cloud instantly
+        if not result or result.get("confidence", 1.0) == 0.0 or not result.get("diff"):
+            print("[Router] Local model unavailable or failed. Escalating to Cloud...")
+            cloud_res = run_cloud(f"{task}\n{last_error}", context)  # <-- FIXED
+            return {"source": "cloud", "result": cloud_res}
             
-            if validation.get("all_pass"):
-                return {
-                    "source": "local", 
-                    "result": result, 
-                    "attempts": attempt + 1,
-                    "confidence": result.get("confidence", 0.5), 
-                    "language": language,
-                    "escalation_reason": None
-                }
-            else:
-                print(f"[Router] Validation failed. Auto-healing...")
-                reason = "hard_failure" if not validation.get("lint_pass") or not validation.get("tests_pass") else "consistency_risk"
-                
-                error_feedback = validation.get("message", "Unknown error")
-                current_prompt = (
-                    f"{task}\n\n--- PREVIOUS ATTEMPT FAILED ---\n"
-                    f"The code you just generated failed automated validation with these errors:\n\n{error_feedback}\n\n"
-                    f"Please fix these errors and rewrite the code. Remember to include FILEPATH: and CONFIDENCE:."
-                )
+        # 3. Soft Sandbox Validation loop
+        val = full_validation(".", result.get("diff", ""), result.get("filepath", "generated_code.py"))
+        if val["all_pass"]:
+            return {"source": "local", "result": result}
         else:
-            reason = "quick_check_failed"
-
-    print("[Router] Local attempts exhausted. Escalating to cloud model...")
-    cloud_result = run_cloud(current_prompt, context)
-    
-    # --- METRICS: Log the cloud API spend ---
-    record_usage("cloud", current_prompt, cloud_result.get("diff", ""))
-    
-    return {"source": "cloud", "result": cloud_result, "escalation_reason": reason}
+            last_error = f"Validation failed: {val['message']}. Please fix the code."
+            print(f"[Router] Validation failed on attempt {attempt}. Retrying...")
+            
+    # If we exhaust all local attempts, do one final cloud fallback
+    print("[Router] Local auto-healing exhausted. Escalating to Cloud...")
+    final_cloud = run_cloud(task, context)  # <-- FIXED
+    return {"source": "cloud", "result": final_cloud}

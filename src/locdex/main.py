@@ -9,7 +9,7 @@ from .rollback import save_checkpoint, restore_latest_checkpoint
 from .editor import get_workspace_context
 from .telemetry import log_routing_outcome
 from .planner import get_metrics_report
-from .safety import is_safe_path, is_protected_path  # UPDATED IMPORT
+from .safety import is_safe_path, is_protected_path, check_ast_security  # ADDED AST LINTER
 
 def startup_diagnostic():
     """Runs a pre-flight check on required environment variables."""
@@ -70,11 +70,10 @@ def chat_loop():
                 if validation.get("all_pass"):
                     print("[System] Validation Passed! Tests ✓ Lint ✓ AI Safety ✓")
                     
-                    # ENFORCE PATH SECURITY BEFORE SAVING
                     if not is_safe_path(".", output_file):
                         print(f"[Security Block] Blocked attempt to commit a file outside the workspace: {output_file}")
                         continue
-
+                        
                     if is_protected_path(output_file):
                         print(f"[Security Block] Blocked attempt to commit a protected internal file: {output_file}")
                         continue
@@ -142,17 +141,33 @@ def chat_loop():
             print(f"[{source} model] ✓ Targeting {output_file}:")
             print(last_diff)
             
-            # ENFORCE PATH SECURITY BEFORE GENERATING
+            # 1. ENFORCE PATH SECURITY
             if not is_safe_path(".", output_file):
                 print(f"\n[Security Block] Path traversal detected! The LLM attempted to write to: {output_file}")
                 print("Write operation aborted to protect the host system.")
                 continue
-
+                
             if is_protected_path(output_file):
                 print(f"\n[Security Block] Attempted to modify a protected internal path: {output_file}")
                 print("Write operation aborted to prevent repository/CI hijacking.")
                 continue
+
+            # 2. ENFORCE EXTENSION WHITELIST (Blocks shell scripts/executables)
+            if not output_file.endswith(".py"):
+                print(f"\n[Security Block] Locdex is currently restricted to generating Python (.py) files.")
+                print(f"Blocked attempt to write unknown format: {output_file}")
+                continue
+
+            # 3. ENFORCE AST SECURITY IN MEMORY BEFORE DISK I/O
+            security_flags = check_ast_security(last_diff)
+            if security_flags:
+                print(f"\n[Security Block] Malicious code generation detected!")
+                for flag in security_flags:
+                    print(f" - {flag}")
+                print("Write operation aborted. The malware was isolated and discarded.")
+                continue
             
+            # SAFE TO WRITE
             save_checkpoint(output_file)
             
             os.makedirs(os.path.dirname(os.path.abspath(output_file)) or ".", exist_ok=True)
