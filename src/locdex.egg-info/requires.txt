@@ -1,8 +1,0 @@
-requests
-sentence-transformers
-numpy
-PyGithub
-anthropic
-pyyaml
-ruff
-pytest
