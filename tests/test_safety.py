@@ -33,3 +33,9 @@ def test_unprotected_path_allowed():
     assert is_protected_path("src/main.py") == False
     assert is_protected_path("README.md") == False
     assert is_protected_path("tests/test_safety.py") == False
+
+def test_argument_injection_blocked():
+    """Verify that filenames starting with a hyphen are blocked to prevent CLI injection."""
+    assert is_safe_path(".", "-malicious-flag.py") == False
+    assert is_safe_path(".", "src/-malicious.py") == False
+    assert is_safe_path(".", "--upload-pack") == False

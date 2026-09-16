@@ -60,8 +60,13 @@ def is_safe_path(base_dir: str, target_path: str) -> bool:
     """
     Verifies that a target file path resolves strictly within the allowed base directory.
     Prevents path traversal attacks (e.g., '../../Windows/System32/malware.exe').
+    Also prevents CLI argument injection by blocking filenames starting with a hyphen.
     """
     try:
+        # Prevent Git/CLI argument injection
+        if os.path.basename(target_path).startswith("-"):
+            return False
+            
         abs_base = os.path.abspath(base_dir)
         abs_target = os.path.abspath(target_path)
         
