@@ -1,8 +1,7 @@
 import ast
+import os
 
-# Added importlib to prevent dynamic module loading
 DANGEROUS_IMPORTS = {"os", "subprocess", "sys", "pty", "socket", "shlex", "requests", "urllib", "importlib"}
-# Added globals, locals, and __import__
 DANGEROUS_CALLS = {"eval", "exec", "open", "__import__", "compile", "globals", "locals"}
 
 def check_ast_security(code: str) -> list[str]:
@@ -17,7 +16,6 @@ def check_ast_security(code: str) -> list[str]:
         return flags
 
     for node in ast.walk(tree):
-        # 1. Block malicious direct imports
         if isinstance(node, ast.Import):
             for alias in node.names:
                 base_module = alias.name.split('.')[0]
@@ -30,7 +28,6 @@ def check_ast_security(code: str) -> list[str]:
                 if base_module in DANGEROUS_IMPORTS:
                     flags.append(f"[Security Violation] Dangerous import detected: 'from {node.module} import ...'. Use of system/network modules is strictly prohibited.")
                     
-        # 2. Block malicious calls and dynamic bypasses
         elif isinstance(node, ast.Call):
             func_name = None
             
@@ -46,7 +43,6 @@ def check_ast_security(code: str) -> list[str]:
                 if isinstance(node.func.value, ast.Name) and node.func.value.id in DANGEROUS_IMPORTS:
                     flags.append(f"[Security Violation] Dangerous module call detected: '{node.func.value.id}.{func_name}()'.")
 
-            # Deep Inspection: Catch getattr(__builtins__, 'eval') or __import__('os')
             if func_name in {"getattr", "__import__", "import_module"}:
                 for arg in node.args:
                     if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
@@ -54,9 +50,23 @@ def check_ast_security(code: str) -> list[str]:
                         if val in DANGEROUS_CALLS or val in DANGEROUS_IMPORTS:
                             flags.append(f"[Security Violation] Dynamic execution bypass detected: attempting to load '{val}'.")
 
-        # 3. Block direct access to the builtins namespace
         elif isinstance(node, ast.Name):
             if node.id in {"__builtins__", "builtins"}:
                 flags.append(f"[Security Violation] Access to the '{node.id}' namespace is strictly prohibited.")
                     
     return flags
+
+def is_safe_path(base_dir: str, target_path: str) -> bool:
+    """
+    Verifies that a target file path resolves strictly within the allowed base directory.
+    Prevents path traversal attacks (e.g., '../../Windows/System32/malware.exe').
+    """
+    try:
+        abs_base = os.path.abspath(base_dir)
+        abs_target = os.path.abspath(target_path)
+        
+        # os.path.commonpath ensures the target originates exactly from the base directory
+        return os.path.commonpath([abs_base, abs_target]) == abs_base
+    except ValueError:
+        # Fails closed on Windows if paths are on different drives (e.g., C: vs D:)
+        return False
