@@ -9,21 +9,17 @@ from .rollback import save_checkpoint, restore_latest_checkpoint
 from .editor import get_workspace_context
 from .telemetry import log_routing_outcome
 from .planner import get_metrics_report
-from .safety import is_safe_path, is_protected_path, check_ast_security  # ADDED AST LINTER
+from .safety import is_safe_path, is_protected_path, check_ast_security
 
 def startup_diagnostic():
-    """Runs a pre-flight check on required environment variables."""
     print("\n[System] Running environment diagnostics...")
-    
     missing = []
     if not os.environ.get("OPENROUTER_API_KEY"):
         print(" ⚠️  Missing OPENROUTER_API_KEY: Cloud fallback failover is DISABLED.")
         missing.append("cloud")
-        
     if not os.environ.get("GITHUB_TOKEN"):
         print(" ⚠️  Missing GITHUB_TOKEN: GitHub PR automation ('ship it') is DISABLED.")
         missing.append("git")
-        
     if not missing:
         print(" ✓ All environment configurations detected. Agent is fully armed.")
     else:
@@ -35,13 +31,11 @@ def chat_loop():
     print("Type your task, 'ship it' to PR, 'budget' for cost metrics, or 'exit' to quit.")
     
     startup_diagnostic()
-    
     db_conn = init_db()
     dummy_thresholds = {}
     
     last_task = "update-code"
-    last_diff = ""
-    output_file = "generated_code.py" 
+    last_generated_files = [] 
     
     while True:
         try:
@@ -55,50 +49,53 @@ def chat_loop():
                 continue
 
             if user_input.lower() == 'rollback':
-                print(f"[System] Attempting to restore {output_file} to previous state...")
-                if restore_latest_checkpoint(output_file):
-                    print(f"✓ Successfully rewound {output_file}.")
-                else:
-                    print(f"x No previous checkpoints found for {output_file}.")
+                print("[System] Attempting rollback...")
+                for f in last_generated_files:
+                    if restore_latest_checkpoint(f["filepath"]):
+                        print(f"✓ Successfully rewound {f['filepath']}.")
                 continue
             
             if user_input.lower() == 'ship it':
-                print(f"[System] Running Validation Gate on {output_file}...")
+                if not last_generated_files:
+                    print("[System] No files to ship.")
+                    continue
+
+                print(f"[System] Running Validation Gate on {len(last_generated_files)} file(s)...")
+                all_pass = True
                 
-                validation = full_validation(".", last_diff, output_file)
-                
-                if validation.get("all_pass"):
+                for f in last_generated_files:
+                    filepath, code = f["filepath"], f["code"]
+                    val = full_validation(".", code, filepath)
+                    if not val.get("all_pass"):
+                        print(f"[System] Validation Failed for {filepath}. {val.get('message', '')}")
+                        all_pass = False
+                        break
+                        
+                    if not is_safe_path(".", filepath) or is_protected_path(filepath):
+                        print(f"[Security Block] Boundary violation on {filepath}")
+                        all_pass = False
+                        break
+
+                if all_pass:
                     print("[System] Validation Passed! Tests ✓ Lint ✓ AI Safety ✓")
+                    paths_to_commit = []
                     
-                    if not is_safe_path(".", output_file):
-                        print(f"[Security Block] Blocked attempt to commit a file outside the workspace: {output_file}")
-                        continue
+                    for f in last_generated_files:
+                        filepath, code = f["filepath"], f["code"]
+                        os.makedirs(os.path.dirname(os.path.abspath(filepath)) or ".", exist_ok=True)
+                        with open(filepath, "w", encoding="utf-8") as file_obj:
+                            file_obj.write(code)
+                        paths_to_commit.append(filepath)
+                        save_memory(db_conn, last_task, code, success=True)
                         
-                    if is_protected_path(output_file):
-                        print(f"[Security Block] Blocked attempt to commit a protected internal file: {output_file}")
-                        continue
-                        
-                    os.makedirs(os.path.dirname(os.path.abspath(output_file)) or ".", exist_ok=True)
-                    if not os.path.exists(output_file):
-                        with open(output_file, "w", encoding="utf-8") as f:
-                            f.write(last_diff)
-                            
-                    save_memory(db_conn, last_task, last_diff, success=True)
                     log_routing_outcome("general_task", "python", "local", success=True, attempts=1)
-                    print("[System] Code pattern saved to local memory.")
-                    
                     try:
-                        pr_url = ship_change(
-                            repo_path=".", 
-                            changed_files=[output_file], 
-                            task_description=last_task
-                        )
+                        pr_url = ship_change(".", paths_to_commit, last_task)
                         print(f"\n✓ Opened PR: {pr_url}")
                     except Exception as git_err:
                         print(f"\n[git error] Failed to push or create PR: {git_err}")
                 else:
-                    print(f"[System] Validation Failed. {validation.get('message', '')}")
-                    save_memory(db_conn, last_task, last_diff, success=False)
+                    save_memory(db_conn, last_task, "Failed validation", success=False)
                     log_routing_outcome("general_task", "python", "local", success=False, attempts=1)
                 continue
             
@@ -107,73 +104,58 @@ def chat_loop():
                 
             print("[System] Reading workspace context...")
             last_task = user_input
-            last_diff = "" 
             
             past_examples = recall_similar(db_conn, user_input)
             memory_string = "\n\n".join(past_examples) if past_examples else "None available yet."
             workspace_string = get_workspace_context(".")
             
-            system_prompt = (
-                f"RELEVANT PAST EXAMPLES:\n{memory_string}\n\n"
-                f"WORKSPACE CONTEXT (Current local files):\n{workspace_string}"
-            )
-            context = {"repo_path": ".", "system_prompt": system_prompt}
+            context = {"repo_path": ".", "system_prompt": f"RELEVANT PAST EXAMPLES:\n{memory_string}\n\nWORKSPACE CONTEXT:\n{workspace_string}"}
             
             print("[Router is evaluating the task...]")
             result = route_task(user_input, "general_task", context, dummy_thresholds)
             
-            if result is None:
-                result = {}
-            elif isinstance(result, str):
-                result = {"source": "mock", "result": {"diff": result, "filepath": "generated_code.py"}}
-                
             source = result.get("source", "unknown")
-            safe_result = result.get("result")
+            files_to_write = result.get("result", {}).get("files", [])
             
-            if isinstance(safe_result, str):
-                safe_result = {"diff": safe_result, "filepath": "generated_code.py"}
-            elif not safe_result:
-                safe_result = {}
-                
-            last_diff = safe_result.get("diff", "No code generated.")
-            output_file = safe_result.get("filepath", "generated_code.py")
-            
-            print(f"[{source} model] ✓ Targeting {output_file}:")
-            print(last_diff)
-            
-            # 1. ENFORCE PATH SECURITY
-            if not is_safe_path(".", output_file):
-                print(f"\n[Security Block] Path traversal detected! The LLM attempted to write to: {output_file}")
-                print("Write operation aborted to protect the host system.")
+            if not files_to_write:
+                print(f"[{source} model] Failed to generate valid code blocks.")
                 continue
                 
-            if is_protected_path(output_file):
-                print(f"\n[Security Block] Attempted to modify a protected internal path: {output_file}")
-                print("Write operation aborted to prevent repository/CI hijacking.")
-                continue
-
-            # 2. ENFORCE EXTENSION WHITELIST (Blocks shell scripts/executables)
-            if not output_file.endswith(".py"):
-                print(f"\n[Security Block] Locdex is currently restricted to generating Python (.py) files.")
-                print(f"Blocked attempt to write unknown format: {output_file}")
-                continue
-
-            # 3. ENFORCE AST SECURITY IN MEMORY BEFORE DISK I/O
-            security_flags = check_ast_security(last_diff)
-            if security_flags:
-                print(f"\n[Security Block] Malicious code generation detected!")
-                for flag in security_flags:
-                    print(f" - {flag}")
-                print("Write operation aborted. The malware was isolated and discarded.")
+            print(f"[{source} model] ✓ Targeting {len(files_to_write)} file(s):")
+            
+            # ALL-OR-NOTHING SECURITY GATE
+            security_failed = False
+            for f in files_to_write:
+                filepath, code = f["filepath"], f["code"]
+                print(f"  - {filepath}")
+                
+                if not is_safe_path(".", filepath):
+                    print(f"\n[Security Block] Path traversal detected: {filepath}")
+                    security_failed = True
+                elif is_protected_path(filepath):
+                    print(f"\n[Security Block] Attempted to modify protected path: {filepath}")
+                    security_failed = True
+                elif not filepath.endswith(".py"):
+                    print(f"\n[Security Block] Locdex is restricted to .py files. Blocked: {filepath}")
+                    security_failed = True
+                elif flags := check_ast_security(code):
+                    print(f"\n[Security Block] Malicious code in {filepath}:")
+                    for flag in flags: print(f" - {flag}")
+                    security_failed = True
+                    
+            if security_failed:
+                print("Write operation aborted for ALL files to protect the host system.")
                 continue
             
             # SAFE TO WRITE
-            save_checkpoint(output_file)
-            
-            os.makedirs(os.path.dirname(os.path.abspath(output_file)) or ".", exist_ok=True)
-            with open(output_file, "w", encoding="utf-8") as f:
-                f.write(last_diff)
-            print(f"(Code saved to {output_file} in your working directory)")
+            last_generated_files = files_to_write
+            for f in files_to_write:
+                filepath, code = f["filepath"], f["code"]
+                save_checkpoint(filepath)
+                os.makedirs(os.path.dirname(os.path.abspath(filepath)) or ".", exist_ok=True)
+                with open(filepath, "w", encoding="utf-8") as file_obj:
+                    file_obj.write(code)
+            print(f"(Code saved to {len(files_to_write)} file(s) in your working directory)")
             
         except KeyboardInterrupt:
             print("\nExiting Locdex...")
@@ -186,7 +168,6 @@ def cli():
     parser = argparse.ArgumentParser(description="Locdex - Local-First AI Coding Agent")
     parser.add_argument("mode", nargs="?", default="chat", help="Command to run (e.g., chat)")
     parser.add_argument("--task", help="One-shot task description")
-    
     args = parser.parse_args()
 
     if args.task:
